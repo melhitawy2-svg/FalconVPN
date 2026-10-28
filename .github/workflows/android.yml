@@ -2,7 +2,8 @@ name: Falcon VPN Android Build
 
 on:
   push:
-    branches: [main]
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -10,6 +11,7 @@ permissions:
 
 jobs:
   build:
+    name: Build Falcon VPN APK
     runs-on: ubuntu-latest
 
     steps:
@@ -26,23 +28,47 @@ jobs:
         uses: android-actions/setup-android@v4
 
       - name: Extract and verify Android project
+        shell: bash
         run: |
+          set -e
+
+          echo "=== Checking ZIP file ==="
+
           if [ ! -f FalconVPN-Starter.zip ]; then
             echo "ERROR: FalconVPN-Starter.zip is missing from repository root"
             ls -la
             exit 1
           fi
 
+          echo "=== Extracting Android project ==="
+
           mkdir -p project
-          unzip -q FalconVPN-Starter.zip -d project
+          unzip -oq FalconVPN-Starter.zip -d project
+
+          echo "=== Checking extracted directory ==="
+
+          if [ -f project/FalconVPN-Starter/settings.gradle.kts ]; then
+            cp -a project/FalconVPN-Starter/. project/
+            rm -rf project/FalconVPN-Starter
+          fi
+
+          echo "=== Project files ==="
+
+          find project -maxdepth 3 -type f | sort | head -100
+
+          echo "=== Verifying required files ==="
 
           if [ ! -f project/settings.gradle.kts ]; then
-            echo "ERROR: settings.gradle.kts was not found after extraction"
-            find project -maxdepth 3 -type f | head -80
+            echo "ERROR: settings.gradle.kts was not found"
             exit 1
           fi
 
-          test -f project/app/build.gradle.kts
+          if [ ! -f project/app/build.gradle.kts ]; then
+            echo "ERROR: app/build.gradle.kts was not found"
+            exit 1
+          fi
+
+          echo "SUCCESS: Android project files verified"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -50,7 +76,21 @@ jobs:
           gradle-version: '8.9'
 
       - name: Build debug APK
-        run: gradle -p project assembleDebug --no-daemon
+        working-directory: project
+        run: gradle assembleDebug --no-daemon
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          set -e
+
+          echo "=== Searching for APK ==="
+
+          find project/app/build/outputs/apk -type f -name "*.apk"
+
+          test -f project/app/build/outputs/apk/debug/app-debug.apk
+
+          echo "SUCCESS: Debug APK created"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
