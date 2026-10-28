@@ -32,15 +32,11 @@ jobs:
         run: |
           set -e
 
-          echo "=== Checking ZIP file ==="
-
           if [ ! -f FalconVPN-Starter.zip ]; then
             echo "ERROR: FalconVPN-Starter.zip is missing"
             ls -la
             exit 1
           fi
-
-          echo "=== Extracting project ==="
 
           mkdir -p project
           unzip -oq FalconVPN-Starter.zip -d project
@@ -50,85 +46,45 @@ jobs:
             rm -rf project/FalconVPN-Starter
           fi
 
-          echo "=== Verifying project files ==="
+          test -f project/settings.gradle.kts
+          test -f project/app/build.gradle.kts
 
-          if [ ! -f project/settings.gradle.kts ]; then
-            echo "ERROR: settings.gradle.kts not found"
-            find project -maxdepth 3 -type f
-            exit 1
-          fi
-
-          if [ ! -f project/app/build.gradle.kts ]; then
-            echo "ERROR: app/build.gradle.kts not found"
-            exit 1
-          fi
-
-          echo "=== Configuring Java and Kotlin JVM target ==="
+          echo "=== Configure Java and Kotlin targets ==="
 
           python3 - <<'PY'
           from pathlib import Path
-          import re
 
           p = Path("project/app/build.gradle.kts")
           s = p.read_text()
 
-          # Set Java source and target compatibility to 17.
-          compile_block = re.compile(
-              r'compileOptions\s*\{.*?\}',
-              re.DOTALL
-          )
-
-          new_compile_block = """compileOptions {
+          java_config = """
+              compileOptions {
                   sourceCompatibility = JavaVersion.VERSION_17
                   targetCompatibility = JavaVersion.VERSION_17
-              }"""
+              }
+          """
 
-          if compile_block.search(s):
-              s = compile_block.sub(new_compile_block, s, count=1)
-          else:
-              android_block = re.search(r'\bandroid\s*\{', s)
-              if not android_block:
-                  raise SystemExit(
-                      "ERROR: Could not find android { } block"
-                  )
-              pos = android_block.end()
-              s = (
-                  s[:pos]
-                  + "\n    "
-                  + new_compile_block
-                  + "\n"
-                  + s[pos:]
+          if "compileOptions" not in s:
+              marker = "android {"
+              if marker not in s:
+                  raise SystemExit("ERROR: android block not found")
+              s = s.replace(
+                  marker,
+                  marker + java_config,
+                  1
               )
 
-          # Set Kotlin JVM target to 17.
-          kotlin_options = re.compile(
-              r'kotlinOptions\s*\{.*?\}',
-              re.DOTALL
-          )
-
-          new_kotlin_options = """kotlinOptions {
+          kotlin_config = """
+          
+          tasks.withType<org.jetbrains.kotlin.gradle.tasks.KotlinCompile>().configureEach {
+              kotlinOptions {
                   jvmTarget = "17"
-              }"""
-
-          if kotlin_options.search(s):
-              s = kotlin_options.sub(
-                  new_kotlin_options, s, count=1
-              )
-          elif re.search(r'\bkotlin\s*\{', s):
-              # Use the toolchain when a Kotlin extension exists
-              s = re.sub(
-                  r'\bkotlin\s*\{',
-                  'kotlin {\n    jvmToolchain(17)',
-                  s,
-                  count=1
-              )
-          else:
-              s += """
-
-          kotlin {
-              jvmToolchain(17)
+              }
           }
           """
+
+          if "jvmTarget" not in s:
+              s = s.rstrip() + kotlin_config + "\n"
 
           p.write_text(s)
 
@@ -136,7 +92,11 @@ jobs:
           print(s)
           PY
 
-          echo "SUCCESS: Project extracted and configured"
+          echo "=== Verify project files ==="
+          test -f project/settings.gradle.kts
+          test -f project/app/build.gradle.kts
+
+          echo "SUCCESS: Project prepared"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -152,14 +112,16 @@ jobs:
         run: |
           set -e
 
-          echo "=== Searching for APK ==="
+          APK="project/app/build/outputs/apk/debug/app-debug.apk"
 
-          find project/app/build/outputs/apk \
-            -type f -name "*.apk"
+          if [ ! -f "$APK" ]; then
+            echo "ERROR: APK was not generated"
+            find project/app/build/outputs -type f 2>/dev/null || true
+            exit 1
+          fi
 
-          test -f project/app/build/outputs/apk/debug/app-debug.apk
-
-          echo "SUCCESS: Debug APK created"
+          echo "SUCCESS: APK generated"
+          ls -lh "$APK"
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
