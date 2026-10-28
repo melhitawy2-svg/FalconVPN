@@ -27,7 +27,7 @@ jobs:
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
 
-      - name: Extract and verify Android project
+      - name: Extract and configure Android project
         shell: bash
         run: |
           set -e
@@ -35,40 +35,108 @@ jobs:
           echo "=== Checking ZIP file ==="
 
           if [ ! -f FalconVPN-Starter.zip ]; then
-            echo "ERROR: FalconVPN-Starter.zip is missing from repository root"
+            echo "ERROR: FalconVPN-Starter.zip is missing"
             ls -la
             exit 1
           fi
 
-          echo "=== Extracting Android project ==="
+          echo "=== Extracting project ==="
 
           mkdir -p project
           unzip -oq FalconVPN-Starter.zip -d project
-
-          echo "=== Checking extracted directory ==="
 
           if [ -f project/FalconVPN-Starter/settings.gradle.kts ]; then
             cp -a project/FalconVPN-Starter/. project/
             rm -rf project/FalconVPN-Starter
           fi
 
-          echo "=== Project files ==="
-
-          find project -maxdepth 3 -type f | sort | head -100
-
-          echo "=== Verifying required files ==="
+          echo "=== Verifying project files ==="
 
           if [ ! -f project/settings.gradle.kts ]; then
-            echo "ERROR: settings.gradle.kts was not found"
+            echo "ERROR: settings.gradle.kts not found"
+            find project -maxdepth 3 -type f
             exit 1
           fi
 
           if [ ! -f project/app/build.gradle.kts ]; then
-            echo "ERROR: app/build.gradle.kts was not found"
+            echo "ERROR: app/build.gradle.kts not found"
             exit 1
           fi
 
-          echo "SUCCESS: Android project files verified"
+          echo "=== Configuring Java and Kotlin JVM target ==="
+
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          p = Path("project/app/build.gradle.kts")
+          s = p.read_text()
+
+          # Set Java source and target compatibility to 17.
+          compile_block = re.compile(
+              r'compileOptions\s*\{.*?\}',
+              re.DOTALL
+          )
+
+          new_compile_block = """compileOptions {
+                  sourceCompatibility = JavaVersion.VERSION_17
+                  targetCompatibility = JavaVersion.VERSION_17
+              }"""
+
+          if compile_block.search(s):
+              s = compile_block.sub(new_compile_block, s, count=1)
+          else:
+              android_block = re.search(r'\bandroid\s*\{', s)
+              if not android_block:
+                  raise SystemExit(
+                      "ERROR: Could not find android { } block"
+                  )
+              pos = android_block.end()
+              s = (
+                  s[:pos]
+                  + "\n    "
+                  + new_compile_block
+                  + "\n"
+                  + s[pos:]
+              )
+
+          # Set Kotlin JVM target to 17.
+          kotlin_options = re.compile(
+              r'kotlinOptions\s*\{.*?\}',
+              re.DOTALL
+          )
+
+          new_kotlin_options = """kotlinOptions {
+                  jvmTarget = "17"
+              }"""
+
+          if kotlin_options.search(s):
+              s = kotlin_options.sub(
+                  new_kotlin_options, s, count=1
+              )
+          elif re.search(r'\bkotlin\s*\{', s):
+              # Use the toolchain when a Kotlin extension exists
+              s = re.sub(
+                  r'\bkotlin\s*\{',
+                  'kotlin {\n    jvmToolchain(17)',
+                  s,
+                  count=1
+              )
+          else:
+              s += """
+
+          kotlin {
+              jvmToolchain(17)
+          }
+          """
+
+          p.write_text(s)
+
+          print("Updated app/build.gradle.kts")
+          print(s)
+          PY
+
+          echo "SUCCESS: Project extracted and configured"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -86,7 +154,8 @@ jobs:
 
           echo "=== Searching for APK ==="
 
-          find project/app/build/outputs/apk -type f -name "*.apk"
+          find project/app/build/outputs/apk \
+            -type f -name "*.apk"
 
           test -f project/app/build/outputs/apk/debug/app-debug.apk
 
