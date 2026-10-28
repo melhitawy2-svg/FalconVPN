@@ -1,0 +1,47 @@
+name: Falcon VPN Android Build
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v4
+
+      - name: Verify Android project files
+        run: |
+          test -f settings.gradle.kts
+          test -f app/build.gradle.kts
+          test -f gradlew
+          test -f gradle/wrapper/gradle-wrapper.properties
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Build debug APK
+        run: ./gradlew assembleDebug --no-daemon
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: Falcon-VPN-debug
+          path: app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
