@@ -11,6 +11,7 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -26,13 +27,13 @@ jobs:
         with:
           packages: 'platform-tools platforms;android-35 build-tools;35.0.0'
 
-      - name: Verify and extract project ZIP
+      - name: Extract project ZIP
         run: |
-          test -f FalconVPN-Starter.zip || { echo 'Missing FalconVPN-Starter.zip in repository root'; exit 1; }
+          test -f FalconVPN-Starter.zip
           mkdir -p project
           unzip -q FalconVPN-Starter.zip -d project
-          test -f project/settings.gradle.kts || { echo 'ZIP must contain settings.gradle.kts at its root'; exit 1; }
-          test -f project/app/build.gradle.kts || { echo 'ZIP must contain app/build.gradle.kts'; exit 1; }
+          test -f project/settings.gradle.kts
+          test -f project/app/build.gradle.kts
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
