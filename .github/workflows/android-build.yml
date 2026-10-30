@@ -28,16 +28,18 @@ steps:
   - name: Extract project ZIP
     run: |
       unzip -o FalconVPN-Starter.zip -d extracted
-      
-      PROJECT_DIR=$(find extracted -type f -path "*/app/build.gradle.kts" -print -quit | xargs dirname | xargs dirname)
 
-      if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR/app" ]; then
+      PROJECT_FILE=$(find extracted -type f -path "*/app/build.gradle.kts" -print -quit)
+
+      if [ -z "$PROJECT_FILE" ]; then
         echo "ERROR: app/build.gradle.kts not found inside ZIP"
         exit 1
       fi
 
+      PROJECT_DIR=$(dirname "$(dirname "$PROJECT_FILE")")
+
       cp -a "$PROJECT_DIR"/. .
-      
+
       echo "Project extracted successfully"
       ls -la
       ls -la app
