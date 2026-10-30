@@ -49,18 +49,18 @@ jobs:
 
       - name: Verify Starter Folder
         run: |
-          PROJECT_DIR="$GITHUB_WORKSPACE/extracted/Starter"
+          PROJECT_DIR="$GITHUB_WORKSPACE/extracted/FalconVPN-Starter/Starter"
 
           if [ ! -d "$PROJECT_DIR" ]; then
             echo "ERROR: Starter folder not found!"
-            find extracted -maxdepth 3 -type d
+            find extracted -maxdepth 5 -type d | sort
             exit 1
           fi
 
           if [ ! -f "$PROJECT_DIR/settings.gradle.kts" ] && \
              [ ! -f "$PROJECT_DIR/settings.gradle" ]; then
             echo "ERROR: Gradle settings file not found in Starter!"
-            find "$PROJECT_DIR" -maxdepth 3 -type f
+            find "$PROJECT_DIR" -maxdepth 3 -type f | sort
             exit 1
           fi
 
@@ -71,7 +71,6 @@ jobs:
           fi
 
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
           echo "Starter project verified successfully."
 
       - name: Setup Gradle
@@ -97,6 +96,7 @@ jobs:
 
           if [ -z "$APK" ]; then
             echo "ERROR: APK was not generated!"
+            find "$PROJECT_DIR/app/build/outputs" -type f | sort
             exit 1
           fi
 
