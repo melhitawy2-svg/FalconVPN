@@ -12,16 +12,18 @@ permissions:
 jobs:
   build:
     name: Build FalconVPN APK
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Check ZIP file
+        shell: bash
         run: |
           if [ ! -f "FalconVPN-Starter.zip" ]; then
-            echo "ERROR: FalconVPN-Starter.zip not found"
+            echo "::error::FalconVPN-Starter.zip not found in repository root"
+            echo "Make sure the ZIP filename matches exactly."
             exit 1
           fi
 
@@ -30,6 +32,15 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+          cache: gradle
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        shell: bash
+        run: |
+          sdkmanager "platform-tools" "platforms;android-35" "build-tools;35.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -37,24 +48,56 @@ jobs:
           gradle-version: '8.9'
 
       - name: Extract project ZIP
+        shell: bash
         run: |
-          unzip -o FalconVPN-Starter.zip -d extracted
+          set -euo pipefail
 
-          PROJECT_DIR=$(find extracted -type f -path "*/app/build.gradle.kts" -print -quit | xargs -r dirname | xargs -r dirname)
+          mkdir -p extracted
+          unzip -q -o FalconVPN-Starter.zip -d extracted
+
+          PROJECT_DIR="$(find extracted -type f -path '*/app/build.gradle.kts' -print -quit | xargs -r dirname | xargs -r dirname)"
 
           if [ -z "$PROJECT_DIR" ] || [ ! -d "$PROJECT_DIR/app" ]; then
-            echo "ERROR: app/build.gradle.kts not found inside ZIP"
+            echo "::error::Could not find app/build.gradle.kts inside ZIP"
+            echo "ZIP contents:"
+            unzip -l FalconVPN-Starter.zip | head -100
             exit 1
           fi
 
           cp -a "$PROJECT_DIR"/. .
 
-          echo "Project extracted successfully"
+          if [ ! -f "settings.gradle.kts" ] && [ ! -f "settings.gradle" ]; then
+            echo "::error::Gradle settings file not found in project root"
+            exit 1
+          fi
+
+          echo "Project extracted successfully."
+          echo "Project root: $PROJECT_DIR"
           ls -la
           ls -la app
 
       - name: Build Debug APK
-        run: gradle assembleDebug
+        shell: bash
+        run: |
+          set -o pipefail
+          gradle assembleDebug --stacktrace
+
+      - name: Verify APK
+        shell: bash
+        run: |
+          APK_PATH="app/build/outputs/apk/debug"
+
+          if [ ! -d "$APK_PATH" ]; then
+            echo "::error::APK output directory was not created"
+            exit 1
+          fi
+
+          find "$APK_PATH" -maxdepth 1 -type f -name '*.apk' -print
+
+          if ! find "$APK_PATH" -maxdepth 1 -type f -name '*.apk' | grep -q .; then
+            echo "::error::No APK file was generated"
+            exit 1
+          fi
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
@@ -62,3 +105,4 @@ jobs:
           name: FalconVPN-Debug-APK
           path: app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
+          retention-days: 7
