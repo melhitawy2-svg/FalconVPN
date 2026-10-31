@@ -1,0 +1,43 @@
+name: Build APK from zip
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unzip the project
+        run: |
+          ls -la
+          unzip -q -o ./*.zip -d src
+          ROOT=$(dirname "$(find src -name settings.gradle.kts -not -path '*/node_modules/*' | head -1)")
+          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
+          ls -la "$ROOT"
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.10.2
+      - name: Fetch libbox 1.13.14
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: |
+          mkdir -p app/libs
+          curl -fL https://jitpack.io/com/github/singbox-android/libbox/1.13.14/libbox-1.13.14.aar -o app/libs/libbox.aar
+          ls -la app/libs
+          sha256sum app/libs/libbox.aar
+          echo "d8ee7620047e4485199a9cf8db30e67d1497534117f1774a93c0696068b7b012  app/libs/libbox.aar" | sha256sum -c -
+      - name: Unit tests
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: gradle testDebugUnitTest --no-daemon --stacktrace
+      - name: Build debug APK
+        working-directory: ${{ env.PROJECT_ROOT }}
+        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-report
