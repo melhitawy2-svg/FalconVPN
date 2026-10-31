@@ -10,11 +10,9 @@ jobs:
       - uses: actions/checkout@v4
       - name: Unzip the project
         run: |
-          ls -la
-          unzip -q -o ./*.zip -d src
-          ROOT=$(dirname "$(find src -name settings.gradle.kts -not -path '*/node_modules/*' | head -1)")
-          echo "PROJECT_ROOT=$ROOT" >> "$GITHUB_ENV"
-          ls -la "$ROOT"
+          unzip -q -o ./FalconVPN_v0_30_0.zip -d src
+          find src -maxdepth 2 | head -20
+          test -f src/falcon_v015/settings.gradle.kts
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -23,7 +21,7 @@ jobs:
         with:
           gradle-version: 8.10.2
       - name: Fetch libbox 1.13.14
-        working-directory: ${{ env.PROJECT_ROOT }}
+        working-directory: src/falcon_v015
         run: |
           mkdir -p app/libs
           curl -fL https://jitpack.io/com/github/singbox-android/libbox/1.13.14/libbox-1.13.14.aar -o app/libs/libbox.aar
@@ -31,13 +29,21 @@ jobs:
           sha256sum app/libs/libbox.aar
           echo "d8ee7620047e4485199a9cf8db30e67d1497534117f1774a93c0696068b7b012  app/libs/libbox.aar" | sha256sum -c -
       - name: Unit tests
-        working-directory: ${{ env.PROJECT_ROOT }}
+        working-directory: src/falcon_v015
         run: gradle testDebugUnitTest --no-daemon --stacktrace
       - name: Build debug APK
-        working-directory: ${{ env.PROJECT_ROOT }}
+        working-directory: src/falcon_v015
         run: gradle assembleDebug --no-daemon --stacktrace
       - name: Upload test report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: unit-test-report
+          path: src/falcon_v015/app/build/reports/tests/testDebugUnitTest/
+          if-no-files-found: warn
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: falcon-debug-apk
+          path: src/falcon_v015/app/build/outputs/apk/debug/*.apk
+          if-no-files-found: error
