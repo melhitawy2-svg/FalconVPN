@@ -1,49 +1,97 @@
-name: Build APK from zip
+name: Falcon VPN - Verified APK Build
+
 on:
   workflow_dispatch:
   push:
     branches: [main]
+
+permissions:
+  contents: read
+
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
-      - name: Unzip the project
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Verify and extract latest source
+        shell: bash
         run: |
-          unzip -q -o ./FalconVPN_v0_30_0.zip -d src
-          find src -maxdepth 2 | head -20
-          test -f src/falcon_v015/settings.gradle.kts
-      - uses: actions/setup-java@v4
+          set -euo pipefail
+
+          ZIP="./FalconVPN_v0_31_8_root_cause_fix.zip"
+
+          if [ ! -f "$ZIP" ]; then
+            echo "ERROR: Required source archive not found: $ZIP"
+            echo "Available ZIP files:"
+            find . -maxdepth 2 -name "*.zip" -print
+            exit 1
+          fi
+
+          unzip -t "$ZIP"
+          mkdir -p src
+          unzip -q -o "$ZIP" -d src
+
+          if [ -f "src/settings.gradle.kts" ]; then
+            PROJECT_DIR="src"
+          elif [ -f "src/falcon_v015/settings.gradle.kts" ]; then
+            PROJECT_DIR="src/falcon_v015"
+          else
+            echo "ERROR: Gradle project root not found."
+            find src -maxdepth 3 -name "settings.gradle.kts" -print
+            exit 1
+          fi
+
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+          test -f "$PROJECT_DIR/app/src/main/assets/builtin_services.json"
+          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
+
+          grep -q "رفع سرعة راوتر WE" \
+            "$PROJECT_DIR/app/src/main/assets/builtin_services.json"
+
+          echo "Correct source archive and WE profile found."
+          echo "Project root: $PROJECT_DIR"
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+          java-version: "17"
+
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
-      - name: Fetch libbox 1.13.14
-        working-directory: src/falcon_v015
+
+      - name: Fetch and verify Libbox
+        working-directory: ${{ env.PROJECT_DIR }}
+        shell: bash
         run: |
+          set -euo pipefail
           mkdir -p app/libs
-          curl -fL https://jitpack.io/com/github/singbox-android/libbox/1.13.14/libbox-1.13.14.aar -o app/libs/libbox.aar
-          ls -la app/libs
-          sha256sum app/libs/libbox.aar
-          echo "d8ee7620047e4485199a9cf8db30e67d1497534117f1774a93c0696068b7b012  app/libs/libbox.aar" | sha256sum -c -
-      - name: Unit tests
-        working-directory: src/falcon_v015
+
+          curl -fL \
+            https://jitpack.io/com/github/singbox-android/libbox/1.13.14/libbox-1.13.14.aar \
+            -o app/libs/libbox.aar
+
+          echo "d8ee7620047e4485199a9cf8db30e67d1497534117f1774a93c0696068b7b012  app/libs/libbox.aar" \
+            | sha256sum -c -
+
+      - name: Run unit tests
+        working-directory: ${{ env.PROJECT_DIR }}
         run: gradle testDebugUnitTest --no-daemon --stacktrace
-      - name: Build debug APK
-        working-directory: src/falcon_v015
-        run: gradle assembleDebug --no-daemon --stacktrace
-      - name: Upload test report
-        if: always()
+
+      - name: Build and verify APK contents
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle verifyDebugApkContents --no-daemon --stacktrace
+
+      - name: Upload verified APK
         uses: actions/upload-artifact@v4
         with:
-          name: unit-test-report
-          path: src/falcon_v015/app/build/reports/tests/testDebugUnitTest/
-          if-no-files-found: warn
-      - name: Upload APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: falcon-debug-apk
-          path: src/falcon_v015/app/build/outputs/apk/debug/*.apk
+          name: FalconVPN-0.31.8-VERIFIED
+          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 7
