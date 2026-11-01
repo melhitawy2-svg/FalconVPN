@@ -1,19 +1,19 @@
 name: Build APK
-# The APK is built and uploaded FIRST. Unit tests, lint and UI tests run afterwards and never block the APK:
-# a failing check must not hide an APK you can install and try on a phone.
+
 on:
   workflow_dispatch:
     inputs:
       trust_first_download:
-        description: "Continue if libbox.aar's SHA-256 differs from libbox.sha256 (the real hash is printed in the run summary; review it, then update libbox.sha256)"
+        description: "Trust first libbox download"
         type: boolean
         default: false
       abis:
-        description: "ABIs to package, comma separated (libbox.aar must contain them). Emulator: arm64-v8a,x86_64"
+        description: "ABIs to package"
         default: arm64-v8a
       libbox_url:
-        description: "Optional URL of a libbox.aar you built yourself. Empty = JitPack singbox-android/libbox 1.13.14"
+        description: "Optional libbox.aar URL"
         default: ""
+
   push:
     branches: [main]
 
@@ -28,85 +28,179 @@ jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 40
+
     env:
       ABIS: ${{ inputs.abis || 'arm64-v8a' }}
       TRUST_FIRST_DOWNLOAD: ${{ inputs.trust_first_download && 'true' || 'false' }}
       LIBBOX_URL: ${{ inputs.libbox_url }}
+
     steps:
       - uses: actions/checkout@v4
-      - name: Unpack project zip (repo holds the project as a .zip)
+
+      - name: Unpack Falcon project ZIP
+        shell: bash
         run: |
-          ZIP="$(ls ./*.zip 2>/dev/null | head -1 || true)"
-          if [ -n "$ZIP" ]; then
-            mkdir -p /tmp/proj && unzip -q "$ZIP" -d /tmp/proj
-            SETTINGS="$(find /tmp/proj -name settings.gradle.kts | head -1)"
-            [ -n "$SETTINGS" ] || { echo "::error::no settings.gradle.kts inside $ZIP"; exit 1; }
-            cp -a "$(dirname "$SETTINGS")"/. .
+          set -euo pipefail
+
+          mkdir -p /tmp/falcon_extract
+          SELECTED_ROOT=""
+
+          for ZIP in ./*.zip; do
+            [ -f "$ZIP" ] || continue
+
+            echo "Checking archive: $ZIP"
+
+            rm -rf /tmp/falcon_extract
+            mkdir -p /tmp/falcon_extract
+
+            unzip -q "$ZIP" -d /tmp/falcon_extract || continue
+
+            while IFS= read -r SETTINGS; do
+              ROOT="$(dirname "$SETTINGS")"
+
+              if [ -d "$ROOT/app" ] &&
+                 [ -f "$ROOT/tools/fetch_libbox.sh" ]; then
+
+                SELECTED_ROOT="$ROOT"
+                echo "Falcon project found in: $ZIP"
+                break
+              fi
+            done < <(
+              find /tmp/falcon_extract \
+                -type f -name settings.gradle.kts
+            )
+
+            [ -n "$SELECTED_ROOT" ] && break
+          done
+
+          if [ -z "$SELECTED_ROOT" ]; then
+            echo "::error::Falcon project not found in ZIP archives"
+            echo "Required files:"
+            echo "settings.gradle.kts"
+            echo "app/"
+            echo "tools/fetch_libbox.sh"
+            exit 1
           fi
-          ls -la
-          test -f tools/fetch_libbox.sh || { echo "::error::tools/fetch_libbox.sh missing"; exit 1; }
+
+          cp -a "$SELECTED_ROOT"/. .
+
+          test -f settings.gradle.kts
+          test -d app
+          test -f tools/fetch_libbox.sh
+
+          echo "Project extraction completed successfully"
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.3'
+          check-latest: true
+
+      - name: Build Pantegnos WASM
+        working-directory: third_party/Pantegnos
+        run: |
+          set -euo pipefail
+
+          go test ./internal/modules/...
+
+          mkdir -p ../../app/src/main/assets
+
+          GOOS=js GOARCH=wasm CGO_ENABLED=0 \
+            go build -trimpath \
+            -ldflags="-s -w" \
+            -o ../../app/src/main/assets/pantegnos.wasm \
+            ./cmd/wasm
+
+          cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" \
+            ../../app/src/main/assets/wasm_exec.js
+
+          test -s ../../app/src/main/assets/pantegnos.wasm
+          test -s ../../app/src/main/assets/wasm_exec.js
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
-      # Do not rely on runner-preinstalled SDK state: install tools and accept licenses explicitly.
+
       - uses: android-actions/setup-android@v4
-      - name: Install Android 35 platform and build tools
-        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Install Android SDK
+        run: |
+          sdkmanager \
+            'platforms;android-35' \
+            'build-tools;35.0.0'
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
-      - name: Fetch libbox (hash-pinned) and dump its API
-        run: bash tools/fetch_libbox.sh "$LIBBOX_URL"
-      - name: Upload libbox API report
+
+      - name: Fetch Libbox
+        run: |
+          bash tools/fetch_libbox.sh "$LIBBOX_URL"
+
+      - name: Upload Libbox API report
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: libbox-api
           path: build-reports/
           if-no-files-found: ignore
-      - name: Build APK and verify packaged services
-        run: gradle :app:verifyDebugApkContents --no-daemon --stacktrace -PfalconAbis="$ABIS"
+
+      - name: Build APK
+        run: |
+          gradle :app:verifyDebugApkContents \
+            --no-daemon \
+            --stacktrace \
+            -PfalconAbis="$ABIS"
+
       - name: Compute APK checksum
         run: |
           cd app/build/outputs/apk/debug
           sha256sum *.apk | tee SHA256SUMS.txt
-          { echo "### APK"; echo '```'; cat SHA256SUMS.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-      - uses: actions/upload-artifact@v4
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
         with:
           name: falcon-debug-apk
           path: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/debug/SHA256SUMS.txt
           if-no-files-found: error
-      # ---- checks below never block the APK above ----
+
       - name: Unit tests
         if: always()
         continue-on-error: true
-        run: gradle :app:testDebugUnitTest --no-daemon --stacktrace -PfalconAbis="$ABIS"
+        run: |
+          gradle :app:testDebugUnitTest \
+            --no-daemon \
+            --stacktrace \
+            -PfalconAbis="$ABIS"
+
       - name: Android lint
         if: always()
         continue-on-error: true
-        run: gradle :app:lintDebug --no-daemon --stacktrace -PfalconAbis="$ABIS"
-      - name: Upload test and lint reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: reports
-          path: |
-            app/build/reports/tests/testDebugUnitTest/
-            app/build/reports/lint-results-debug.html
-          if-no-files-found: ignore
+        run: |
+          gradle :app:lintDebug \
+            --no-daemon \
+            --stacktrace \
+            -PfalconAbis="$ABIS"
 
   ui-test:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     continue-on-error: true
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: pip install playwright && playwright install --with-deps chromium
-      - name: UI logic tests (mock bridge, headless Chromium)
+
+      - name: Install Playwright
+        run: |
+          pip install playwright
+          playwright install --with-deps chromium
+
+      - name: Run UI tests
         run: python3 tools/ui_test.py
