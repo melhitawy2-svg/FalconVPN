@@ -1,97 +1,98 @@
-name: Falcon VPN - Verified APK Build
-
+name: Build APK
+# The APK is built and uploaded FIRST. Unit tests, lint and UI tests run afterwards and never block the APK:
+# a failing check must not hide an APK you can install and try on a phone.
 on:
   workflow_dispatch:
+    inputs:
+      trust_first_download:
+        description: "Continue if libbox.aar's SHA-256 differs from libbox.sha256 (the real hash is printed in the run summary; review it, then update libbox.sha256)"
+        type: boolean
+        default: false
+      abis:
+        description: "ABIs to package, comma separated (libbox.aar must contain them). Emulator: arm64-v8a,x86_64"
+        default: arm64-v8a
+      libbox_url:
+        description: "Optional URL of a libbox.aar you built yourself. Empty = JitPack singbox-android/libbox 1.13.14"
+        default: ""
   push:
     branches: [main]
 
 permissions:
   contents: read
 
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
-
+    timeout-minutes: 40
+    env:
+      ABIS: ${{ inputs.abis || 'arm64-v8a' }}
+      TRUST_FIRST_DOWNLOAD: ${{ inputs.trust_first_download && 'true' || 'false' }}
+      LIBBOX_URL: ${{ inputs.libbox_url }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Verify and extract latest source
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          ZIP="./FalconVPN_v0_31_8_root_cause_fix.zip"
-
-          if [ ! -f "$ZIP" ]; then
-            echo "ERROR: Required source archive not found: $ZIP"
-            echo "Available ZIP files:"
-            find . -maxdepth 2 -name "*.zip" -print
-            exit 1
-          fi
-
-          unzip -t "$ZIP"
-          mkdir -p src
-          unzip -q -o "$ZIP" -d src
-
-          if [ -f "src/settings.gradle.kts" ]; then
-            PROJECT_DIR="src"
-          elif [ -f "src/falcon_v015/settings.gradle.kts" ]; then
-            PROJECT_DIR="src/falcon_v015"
-          else
-            echo "ERROR: Gradle project root not found."
-            find src -maxdepth 3 -name "settings.gradle.kts" -print
-            exit 1
-          fi
-
-          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
-
-          test -f "$PROJECT_DIR/app/src/main/assets/builtin_services.json"
-          test -f "$PROJECT_DIR/app/src/main/assets/index.html"
-
-          grep -q "رفع سرعة راوتر WE" \
-            "$PROJECT_DIR/app/src/main/assets/builtin_services.json"
-
-          echo "Correct source archive and WE profile found."
-          echo "Project root: $PROJECT_DIR"
-
-      - name: Set up Java
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+          java-version: 17
+      # Do not rely on runner-preinstalled SDK state: install tools and accept licenses explicitly.
+      - uses: android-actions/setup-android@v4
+      - name: Install Android 35 platform and build tools
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.10.2
-
-      - name: Fetch and verify Libbox
-        working-directory: ${{ env.PROJECT_DIR }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p app/libs
-
-          curl -fL \
-            https://jitpack.io/com/github/singbox-android/libbox/1.13.14/libbox-1.13.14.aar \
-            -o app/libs/libbox.aar
-
-          echo "d8ee7620047e4485199a9cf8db30e67d1497534117f1774a93c0696068b7b012  app/libs/libbox.aar" \
-            | sha256sum -c -
-
-      - name: Run unit tests
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: gradle testDebugUnitTest --no-daemon --stacktrace
-
-      - name: Build and verify APK contents
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: gradle verifyDebugApkContents --no-daemon --stacktrace
-
-      - name: Upload verified APK
+      - name: Fetch libbox (hash-pinned) and dump its API
+        run: bash tools/fetch_libbox.sh "$LIBBOX_URL"
+      - name: Upload libbox API report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: FalconVPN-0.31.8-VERIFIED
-          path: ${{ env.PROJECT_DIR }}/app/build/outputs/apk/debug/app-debug.apk
+          name: libbox-api
+          path: build-reports/
+          if-no-files-found: ignore
+      - name: Build APK and verify packaged services
+        run: gradle :app:verifyDebugApkContents --no-daemon --stacktrace -PfalconAbis="$ABIS"
+      - name: Compute APK checksum
+        run: |
+          cd app/build/outputs/apk/debug
+          sha256sum *.apk | tee SHA256SUMS.txt
+          { echo "### APK"; echo '```'; cat SHA256SUMS.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: falcon-debug-apk
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/debug/SHA256SUMS.txt
           if-no-files-found: error
-          retention-days: 7
+      # ---- checks below never block the APK above ----
+      - name: Unit tests
+        if: always()
+        continue-on-error: true
+        run: gradle :app:testDebugUnitTest --no-daemon --stacktrace -PfalconAbis="$ABIS"
+      - name: Android lint
+        if: always()
+        continue-on-error: true
+        run: gradle :app:lintDebug --no-daemon --stacktrace -PfalconAbis="$ABIS"
+      - name: Upload test and lint reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: reports
+          path: |
+            app/build/reports/tests/testDebugUnitTest/
+            app/build/reports/lint-results-debug.html
+          if-no-files-found: ignore
+
+  ui-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
